@@ -32,6 +32,7 @@ void cLogger::InitiateMultithreading()
 
 void cLogger::LogSimple(AString a_Message, eLogLevel a_LogLevel)
 {
+	cCSLock Lock(m_CriticalSection);
 	time_t rawtime;
 	time(&rawtime);
 
@@ -52,7 +53,6 @@ void cLogger::LogSimple(AString a_Message, eLogLevel a_LogLevel)
 	#endif
 
 
-	cCSLock Lock(m_CriticalSection);
 	for (size_t i = 0; i < m_LogListeners.size(); i++)
 	{
 		m_LogListeners[i]->Log(Line, a_LogLevel);
