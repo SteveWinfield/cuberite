@@ -80,8 +80,11 @@ public:
 		/** Allows to use this class wherever an int (i. e. ref) is to be used */
 		explicit operator int(void) const { return m_Ref; }
 
+		/** Returns the Lua state associated with the value. */
+		lua_State * GetLuaState(void) { return m_LuaState; }
+
 	protected:
-		cLuaState * m_LuaState;
+		lua_State * m_LuaState;
 		int m_Ref;
 
 		// Remove the copy-constructor:
@@ -112,6 +115,63 @@ public:
 	} ;
 	
 	
+	/** Represents a callback to Lua that C++ code can call.
+	Is thread-safe and unload-safe.
+	When the Lua state is unloaded, the callback returns an error instead of calling into non-existent code.
+	To receive the callback instance from the Lua side, use RefStack() or (better) cLuaState::GetStackValue(). */
+	class cCallback
+	{
+	public:
+		/** Creates an unbound callback instance. */
+		cCallback(void) = default;
+
+		~cCallback()
+		{
+			Clear();
+		}
+
+		/** Calls the Lua callback, if still available.
+		Returns true if callback has been called.
+		Returns false if the Lua state isn't valid anymore. */
+		template <typename... Args>
+		bool Call(Args &&... args)
+		{
+			cCSLock Lock(m_CS);
+			if (!m_Ref.IsValid())
+			{
+				return false;
+			}
+			cLuaState(m_Ref.GetLuaState()).Call(m_Ref, std::forward<Args>(args)...);
+			return true;
+		}
+
+		/** Set the contained callback to the function in the specified Lua state's stack position.
+		If a callback has been previously contained, it is freed first. */
+		bool RefStack(cLuaState & a_LuaState, int a_StackPos);
+
+		/** Frees the contained callback, if any. */
+		void Clear(void);
+
+	protected:
+		friend class cLuaState;
+
+		/** The mutex protecting m_Ref against multithreaded access */
+		cCriticalSection m_CS;
+
+		/** Reference to the Lua callback */
+		cRef m_Ref;
+
+
+		/** Invalidates the callback, without untracking it from the cLuaState.
+		Called only from cLuaState when closing the Lua state. */
+		void Invalidate(void);
+
+		/** This class cannot be copied, you can only std::move() it. */
+		cCallback(const cCallback &) = delete;
+	};
+	typedef SharedPtr<cCallback> cCallbackPtr;
+
+
 	/** A dummy class that's used only to delimit function args from return values for cLuaState::Call() */
 	class cRet
 	{
@@ -268,6 +328,7 @@ public:
 	bool GetStackValue(int a_StackPos, bool & a_Value);
 	bool GetStackValue(int a_StackPos, cPluginManager::CommandResult & a_Result);
 	bool GetStackValue(int a_StackPos, cRef & a_Ref);
+	bool GetStackValue(int a_StackPos, cCallback & a_Ref);
 	bool GetStackValue(int a_StackPos, double & a_Value);
 	bool GetStackValue(int a_StackPos, eBlockFace & a_Value);
 	bool GetStackValue(int a_StackPos, eWeather & a_Value);
@@ -441,8 +502,7 @@ protected:
 	bool m_IsOwned;
 	
 	/** The subsystem name is used for reporting errors to the console, it is either "plugin %s" or "LuaScript"
-	whatever is given to the constructor
-	*/
+	whatever is given to the constructor. */
 	AString m_SubsystemName;
 	
 	/** Name of the currently pushed function (for the Push / Call chain) */
@@ -450,6 +510,15 @@ protected:
 	
 	/** Number of arguments currently pushed (for the Push / Call chain) */
 	int m_NumCurrentFunctionArgs;
+
+	/** The tracked callbacks.
+	This object will invalidate all of these when it is about to be closed.
+	Protected against multithreaded access by m_CSTrackedCallbacks. */
+	std::vector<cCallback *> m_TrackedCallbacks;
+
+	/** Protects m_TrackedTallbacks against multithreaded access. */
+	cCriticalSection m_CSTrackedCallbacks;
+
 
 	/** Variadic template terminator: If there's nothing more to push / pop, just call the function.
 	Note that there are no return values either, because those are prefixed by a cRet value, so the arg list is never empty. */
@@ -533,6 +602,14 @@ protected:
 
 	/** Tries to break into the MobDebug debugger, if it is installed. */
 	static int BreakIntoDebugger(lua_State * a_LuaState);
+
+	/** Adds the specified callback to tracking.
+	The callback will be invalidated when this Lua state is about to be closed. */
+	void TrackCallback(cCallback & a_Callback);
+
+	/** Removes the specified callback from tracking.
+	The callback will no longer be invalidated when this Lua state is about to be closed. */
+	void UntrackCallback(cCallback & a_Callback);
 } ;
 
 
